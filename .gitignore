@@ -1,0 +1,14 @@
+# Cache and Testing
+__pycache__/
+*.py[cod]
+*.pytest
+*.py.lprof
+# Misc
+.vscode/settings.json
+*.ipynb
+
+# Folders
+output/
+docs/*
+!*Doxyfile
+
