@@ -11,4 +11,7 @@ __pycache__/
 output/
 docs/*
 !*Doxyfile
+prototyping/
 
+# api keys
+config/api-keys.ini
