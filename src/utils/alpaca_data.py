@@ -1,32 +1,11 @@
 import pandas as pd
 import numpy as np
 
-from alpaca.trading.requests import GetAssetsRequest
-from alpaca.trading.enums import AssetClass, AssetStatus
 from alpaca.data.requests import StockQuotesRequest
 
 from datetime import datetime, time, timedelta
 from pytz import timezone
-
-
-def get_active_assets(trading_client):
-    """!@brief Get all active assets from the Alpaca API
-    @param trading_client (TradingClient): Alpaca TradingClient object
-
-    @return DataFrame: DataFrame containing all active assets
-    """
-    search_params = GetAssetsRequest(
-        asset_class=AssetClass.US_EQUITY, status=AssetStatus.ACTIVE
-    )
-
-    active_assets = trading_client.get_all_assets(search_params)
-    assets_df = pd.DataFrame(active_assets)
-
-    # extract column names
-    assets_df.columns = list(zip(*assets_df.loc[0]))[0]
-    assets_df = assets_df.map(lambda x: x[1])
-
-    return assets_df
+from tqdm import tqdm
 
 
 def stockday_request(ticker, date):
@@ -152,6 +131,7 @@ def get_stockstime_data(marketdata_client, tickers, date, time, duration):
 
     quotes_df = quotes.df
 
+    # CR TODO: add max_width argument, any market wider than that should be discarded
     quotes_df["mid_price"] = (quotes_df["ask_price"] + quotes_df["bid_price"]) / 2
     quotes_df["spread"] = (quotes_df["ask_price"] - quotes_df["bid_price"]) / quotes_df[
         "mid_price"
@@ -234,29 +214,30 @@ def get_quote_summaries_across_dates(
     all_data = []
 
     # Loop through the date range
-    current_date = start_date
-    while current_date <= end_date:
+    dates = pd.date_range(start_date, end_date).to_pydatetime()
+    dates = list(map(lambda x: x.date(), dates))
+
+    for date_itr in (pbar_date := tqdm(dates)):
+        date_str = date_itr.strftime("%Y-%m-%d")
+        pbar_date.set_description(f"Processing {date_str}")
         try:
             # Get quote summaries for the current date
             daily_data = get_quote_summaries(
                 marketdata_client=marketdata_client,
                 tickers=tickers,
-                date=current_date,
+                date=date_itr,
                 start_time=start_time,
                 end_time=end_time,
                 grid_span=grid_span,
             )
 
             # Add a date column for tracking
-            daily_data["date"] = current_date
+            daily_data["date"] = date_itr
             all_data.append(daily_data)
 
         except KeyError as e:
             # Handle missing data for closed markets or other issues
-            print(f"No data for {current_date}: {e}")
-
-        # Move to the next day
-        current_date += timedelta(days=1)
+            tqdm.write(f"No data for {date_itr}: {e}")
 
     # Combine all the data into a single DataFrame
     if all_data:
