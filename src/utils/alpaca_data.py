@@ -3,7 +3,7 @@ import numpy as np
 
 from alpaca.data.requests import StockQuotesRequest
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from pytz import timezone
 from tqdm import tqdm
 
@@ -28,7 +28,7 @@ def stockday_request(ticker, date):
     return request_params
 
 
-def stockstime_request(tickers, date, time, duration):
+def stockstime_request(tickers, date, time, look_span):
     """!@brief Create a request for stock quotes around a particular time
     @param ticker (str): Ticker symbol to get data for
     @param date (datetime.date): Date to get data for
@@ -43,8 +43,8 @@ def stockstime_request(tickers, date, time, duration):
     request_params = StockQuotesRequest(
         symbol_or_symbols=tickers,
         # these times are in UTC, this loads in a full day of ticks
-        start=nyc.localize(datetime.combine(date, time) - duration),
-        end=nyc.localize(datetime.combine(date, time) + duration),
+        start=nyc.localize(datetime.combine(date, time) - look_span),
+        end=nyc.localize(datetime.combine(date, time) + look_span),
     )
 
     return request_params
@@ -116,7 +116,7 @@ def select_before_after_rows(df, reference_time):
 
 
 # CR TODO: consider handling different timezones
-def get_stockstime_data(marketdata_client, tickers, date, time, duration):
+def get_stockstime_data(marketdata_client, tickers, date, time, look_span):
     """!@brief Get stock quotes around a particular time for a list of tickers
     @param trading_client (TradingClient): Alpaca TradingClient object
     @param tickers (List[str]): List of ticker symbols to get data for
@@ -126,7 +126,7 @@ def get_stockstime_data(marketdata_client, tickers, date, time, duration):
 
     @return pd.DataFrame: DataFrame containing stock quotes for each ticker
     """
-    request_params = stockstime_request(tickers, date, time, duration)
+    request_params = stockstime_request(tickers, date, time, look_span)
     quotes = marketdata_client.get_stock_quotes(request_params)
 
     quotes_df = quotes.df
@@ -148,7 +148,7 @@ def get_stockstime_data(marketdata_client, tickers, date, time, duration):
 
 
 def get_quote_summaries(
-    marketdata_client, tickers, date, start_time, end_time, grid_span
+    marketdata_client, tickers, date, start_time, end_time, grid_span, look_span
 ):
     """
     Collects quote summaries at regular intervals between start_time and end_time.
@@ -160,6 +160,7 @@ def get_quote_summaries(
     - start_time: Start time (datetime.time object) for the grid.
     - end_time: End time (datetime.time object) for the grid.
     - grid_span: Time delta representing the spacing between grid points.
+    - look_span: Time delta representing the duration of data to fetch around each grid point.
 
     Returns:
     - DataFrame: A combined DataFrame indexed by symbol and time containing quote summaries.
@@ -181,7 +182,7 @@ def get_quote_summaries(
             tickers=tickers,
             date=date,
             time=t,
-            duration=timedelta(seconds=10),  # Assuming a 10-second window
+            look_span=look_span,
         )
         df["time"] = t  # Add time column for tracking
         all_data.append(df)
@@ -194,7 +195,14 @@ def get_quote_summaries(
 
 
 def get_quote_summaries_across_dates(
-    marketdata_client, tickers, start_date, end_date, start_time, end_time, grid_span
+    marketdata_client,
+    tickers,
+    start_date,
+    end_date,
+    start_time,
+    end_time,
+    grid_span,
+    look_span,
 ):
     """
     Collects quote summaries at regular intervals across a range of dates, handling missing data.
@@ -207,6 +215,7 @@ def get_quote_summaries_across_dates(
     - start_time: Start time (datetime.time object) for the grid each day.
     - end_time: End time (datetime.time object) for the grid each day.
     - grid_span: Time delta representing the spacing between grid points.
+    - look_span: Time delta representing the duration of data to fetch around each grid point.
 
     Returns:
     - DataFrame: A combined DataFrame indexed by date, symbol, and time containing quote summaries.
@@ -229,6 +238,7 @@ def get_quote_summaries_across_dates(
                 start_time=start_time,
                 end_time=end_time,
                 grid_span=grid_span,
+                look_span=look_span,
             )
 
             # Add a date column for tracking
@@ -250,3 +260,115 @@ def get_quote_summaries_across_dates(
         # Return an empty DataFrame if no data was collected
         print("No data available for the specified date range.")
         return pd.DataFrame()
+
+
+def compute_returns(
+    quote_df: pd.DataFrame, price_window: str = "before_after"
+) -> pd.DataFrame:
+    """
+    Computes returns between consecutive timepoints for each symbol.
+
+    Parameters:
+    - quote_df (pd.DataFrame): DataFrame containing quote data with 'symbol' as the index and columns:
+        ['grid_time', 'mid_price_before', 'spread_before',
+         'mid_price_after', 'spread_after', 'time', 'date']
+    - price_window (str): Determines which prices to use for return calculation.
+        - 'before_after': Use T0 mid_price_before to T1 mid_price_after
+        - 'after_before': Use T0 mid_price_after to T1 mid_price_before
+
+    Returns:
+    - pd.DataFrame: DataFrame with columns ['symbol', 'return', 'start_time', 'end_time']
+      where 'start_time' and 'end_time' are timezone-aware timestamps in US/Eastern.
+    """
+
+    # Validate price_window parameter
+    if price_window not in ["before_after", "after_before"]:
+        raise ValueError("price_window must be either 'before_after' or 'after_before'")
+
+    # Reset index to have 'symbol' as a column
+    quote_df = quote_df.reset_index()
+
+    # Combine 'date' and 'time' into a single 'timestamp' column without converting to string
+    quote_df["timestamp"] = pd.to_datetime(quote_df["date"]) + pd.to_timedelta(
+        quote_df["time"].astype(str)
+    )
+
+    # Localize to US/Eastern timezone
+    eastern = timezone("US/Eastern")
+    quote_df["timestamp"] = quote_df["timestamp"].dt.tz_localize(eastern)
+
+    # Sort the DataFrame by 'symbol' and 'timestamp'
+    quote_df = quote_df.sort_values(by=["symbol", "timestamp"]).reset_index(drop=True)
+
+    # Define price_t0 and price_t1 based on price_window
+    if price_window == "before_after":
+        quote_df["price_t0"] = quote_df["mid_price_before"]
+        quote_df["price_t1"] = quote_df.groupby("symbol")["mid_price_after"].shift(-1)
+    elif price_window == "after_before":
+        quote_df["price_t0"] = quote_df["mid_price_after"]
+        quote_df["price_t1"] = quote_df.groupby("symbol")["mid_price_before"].shift(-1)
+    else:
+        raise ValueError("price_window must be either 'before_after' or 'after_before")
+
+    # Calculate returns
+    quote_df["return"] = (quote_df["price_t1"] / quote_df["price_t0"]) - 1
+
+    # Define start_time and end_time
+    quote_df["start_time"] = quote_df["timestamp"]
+    quote_df["end_time"] = quote_df.groupby("symbol")["timestamp"].shift(-1)
+
+    # Select required columns and drop rows with NaN in 'end_time'
+    returns_df = quote_df[["symbol", "return", "start_time", "end_time"]].dropna()
+
+    return returns_df
+
+
+def merge_predictors_and_responders(predictors_df, responders_df):
+    """
+    Merges two dataframes: one containing predictors and one containing responder symbols.
+    Both dataframes are expected to have ['symbol', 'return', 'start_time', 'end_time'].
+
+    This function pivots each dataframe so each symbol becomes its own column. The returned
+    dataframe includes all responder returns and all predictor returns in a single, flat structure.
+
+    Parameters
+    ----------
+    predictors_df : pd.DataFrame
+        DataFrame with predictor symbols. Columns: ['symbol', 'return', 'start_time', 'end_time'].
+    responders_df : pd.DataFrame
+        DataFrame with responder (target) symbols. Same columns as above.
+
+    Returns
+    -------
+    pd.DataFrame
+        A single DataFrame with one row per (start_time, end_time).
+        Columns will be:
+          - start_time
+          - end_time
+          - resp_<symbol> for each responder symbol
+          - pred_<symbol> for each predictor symbol
+    """
+    import pandas as pd
+
+    # Pivot responders so each symbol is its own column
+    responders_wide = responders_df.pivot(
+        index=["start_time", "end_time"], columns="symbol", values="return"
+    )
+    # Prefix responder columns for clarity
+    responders_wide.columns = [f"resp_{col}" for col in responders_wide.columns]
+    responders_wide = responders_wide.reset_index()
+
+    # Pivot predictors so each symbol is its own column
+    predictors_wide = predictors_df.pivot(
+        index=["start_time", "end_time"], columns="symbol", values="return"
+    )
+    # Prefix predictor columns
+    predictors_wide.columns = [f"pred_{col}" for col in predictors_wide.columns]
+    predictors_wide = predictors_wide.reset_index()
+
+    # Merge on (start_time, end_time)
+    merged = pd.merge(
+        responders_wide, predictors_wide, on=["start_time", "end_time"], how="inner"
+    )
+
+    return merged

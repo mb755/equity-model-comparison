@@ -28,6 +28,7 @@ end_date = args["end_date"] or start_date
 start_time = args["start_time"]
 end_time = args["end_time"]
 grid_span = args["grid_span"]
+look_span = args["look_span"]
 
 ###########################################################
 # grab initial values from config file
@@ -52,6 +53,7 @@ end_date = date.fromisoformat(end_date)
 start_time = time.fromisoformat(start_time)
 end_time = time.fromisoformat(end_time)
 grid_span = timedelta(seconds=grid_span)
+look_span = timedelta(seconds=look_span)
 
 quote_data = get_quote_summaries_across_dates(
     marketdata_client=marketdata_client,
@@ -61,6 +63,7 @@ quote_data = get_quote_summaries_across_dates(
     start_time=start_time,
     end_time=end_time,
     grid_span=grid_span,
+    look_span=look_span,
 )
 
 # save quote data to disk as a pickle file

@@ -26,6 +26,7 @@ def default_parser(description):
     -st, --start-time: start time for data collection <br>
     -et, --end-time: end time for data collection <br>
     -gs, --grid-span: time delta representing the spacing between grid points <br>
+    -ls, --look-span: time delta representing the lookback/lookahead for ticks <br>
     -o, --output-suffix: string appended to all output filenames <br>
     -c, --config-file: configuration file defining initial hyperparameters <br>
     -t, --ticker-file: filename containing list of tickers to get data for <br>
@@ -76,6 +77,14 @@ def default_parser(description):
         help="Time delta representing the spacing between grid points (seconds)",
         required=False,
         default=300,
+        type=int,
+    )
+    parser.add_argument(
+        "-ls",
+        "--look-span",
+        help="Time delta representing the lookback/lookahead for ticks (seconds)",
+        required=False,
+        default=30,
         type=int,
     )
     parser.add_argument(
